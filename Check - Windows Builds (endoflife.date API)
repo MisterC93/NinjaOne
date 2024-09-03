@@ -1,0 +1,70 @@
+# Define the URL of the JSON file
+$url = "https://endoflife.date/api/windows.json"
+
+# Fetch the JSON data from the URL
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$jsonData = Invoke-RestMethod -Uri $url
+
+# Get the current Windows build number
+$currentBuild = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").CurrentBuild
+
+# Get the Windows edition
+$windowsEdition = (Get-CimInstance -ClassName Win32_OperatingSystem).Caption
+
+# Determine the edition type
+$editionType = if ($windowsEdition -match "Enterprise|Education|IoT Enterprise") {
+    "E"
+} elseif ($windowsEdition -match "Home|Pro|Pro Education|Pro for Workstations|Business") {
+    "W"
+} else {
+    "Unknown"
+}
+
+# Function to find matching entries
+function Find-MatchingEntries {
+    param (
+        [string]$build
+    )
+    return $jsonData | Where-Object { $_.latest -like "*$build*" }
+}
+
+# Find the matching entry in the JSON data by current build
+$matchingEntries = Find-MatchingEntries -build $currentBuild
+
+# If no match, try removing the last digit
+if (-not $matchingEntries) {
+    $shortenedBuild = $currentBuild.Substring(0, $currentBuild.Length - 1)
+    $matchingEntries = Find-MatchingEntries -build $shortenedBuild
+}
+
+# If more than one result, filter by edition type
+if ($matchingEntries.Count -gt 1) {
+    $matchingEntries = $matchingEntries | Where-Object { $_.cycle -like "*$editionType*" }
+}
+
+# Initialize the output variable
+$disIs = ""
+
+# Check if the device is end-of-life or within the coming 3 months
+if ($matchingEntries) {
+    foreach ($entry in $matchingEntries) {
+        $eolDate = [datetime]::ParseExact($entry.eol, "yyyy-MM-dd", $null)
+        $currentDate = Get-Date
+        $threeMonthsFromNow = $currentDate.AddMonths(3)
+
+        if ($eolDate -gt $currentDate) {
+            if ($eolDate -le $threeMonthsFromNow) {
+                $disIs = "⚠️ Windows $($entry.releaseLabel) bereikt end-of-life binnen de komende 3 maanden. End-of-Life vanaf $($eolDate.ToString('dd-MM-yyyy'))"
+            } else {
+                $disIs = "✅ Windows $($entry.releaseLabel) wordt ondersteund. End-of-Life vanaf $($eolDate.ToString('dd-MM-yyyy'))"
+            }
+        } else {
+            $disIs = "❌ Windows $($entry.releaseLabel) is end-of-life. End-of-Life vanaf $($eolDate.ToString('dd-MM-yyyy'))☠️"
+        }
+    }
+} else {
+    $disIs = "☠️ Geen overeenkomstige vermelding voor Windows build: $currentBuild"
+}
+
+# Write the values to a custom module
+Ninja-Property-Set windowsbuildcheck $disIs
